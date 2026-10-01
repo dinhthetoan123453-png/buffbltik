@@ -272,14 +272,20 @@ class ZefoyCommentsHeartsBot:
             for wait_sec in range(16):
                 await asyncio.sleep(1)
 
-                # Kiểm tra dropdown limit nếu có
+                # Kiểm tra dropdown limit nếu có (chọn max 50 cho Comments Hearts)
                 selects = page.locator('.t-chearts-menu select')
                 if await selects.count() > 0:
                     sel = selects.first
                     options = await sel.locator('option').all_inner_texts()
-                    for opt in options:
-                        if '100' in opt:
-                            await sel.select_option(label=opt)
+                    selected = False
+                    for target_val in ['50', '25', '10']:
+                        for opt in options:
+                            if target_val in opt:
+                                await sel.select_option(label=opt)
+                                print(f"[*] Đã chọn limit: {opt}")
+                                selected = True
+                                break
+                        if selected:
                             break
 
                 # Tìm các bình luận và nút kích hoạt
