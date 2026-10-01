@@ -9,10 +9,10 @@ services:
       - key: GEMINI_API_KEY
         sync: false
       - key: TIKTOK_URL
-        value: "https://www.tiktok.com/@toandinh0207/photo/7681249165866814741"
+        value: "https://vt.tiktok.com/ZS9DYddHW9abm-CnX9Q/"
       - key: COMMENT_KEYWORD
-        value: ""
+        value: "ok"
       - key: COMMENT_USERNAME
-        value: ""
+        value: "dtt_027"
       - key: PORT
         value: "10000"

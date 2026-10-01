@@ -295,10 +295,15 @@ class ZefoyCommentsHeartsBot:
                 c_text = (await count_btn.first.inner_text()).strip()
                 print(f"[*] Tìm thấy nút mở danh sách bình luận ({c_text}), đang bấm mở...")
                 await count_btn.first.click(force=True)
-                await asyncio.sleep(5)
-
+                
+                # Chờ danh sách comment tải xong (tối đa 10s)
                 comment_items = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r li.list-group-item')
-                item_count = await comment_items.count()
+                item_count = 0
+                for _ in range(10):
+                    await asyncio.sleep(1)
+                    item_count = await comment_items.count()
+                    if item_count > 0:
+                        break
                 print(f"[*] Đã nạp {item_count} bình luận vào danh sách")
 
                 target_item = None
