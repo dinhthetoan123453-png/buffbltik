@@ -206,25 +206,37 @@ class ZefoyCommentsHeartsBot:
                     search_url = self.raw_target_url.rstrip('.').strip()
 
                     input_box = page.locator('.t-chearts-menu input[type="search"], .t-chearts-menu input[type="text"]').first
-                    await input_box.fill("")
-                    await asyncio.sleep(0.2)
-                    await input_box.fill(search_url)
-                    await asyncio.sleep(0.5)
-                    
                     search_btn = page.locator('.t-chearts-menu button[type="submit"]').first
-                    await search_btn.click(force=True)
-                    log(f"Đã bấm Search video: {search_url}")
-                    await asyncio.sleep(3)
 
-                    # Bước 1: Kiểm tra xem có đang bị Cooldown không
-                    for _ in range(75):
+                    # Bước 1: Kiểm tra và chờ hết Cooldown trước khi Search
+                    while True:
                         menu_text = await page.locator('.t-chearts-menu').inner_text()
                         if "Please wait" in menu_text:
                             m = re.search(r'Please wait\s+(\d+\s+minute\(s\)\s+\d+\s+second\(s\))', menu_text)
                             c_str = m.group(1) if m else "..."
                             STATUS["cooldown"] = c_str
                             STATUS["current_status"] = f"Đang chờ Cooldown ({c_str})"
-                            await asyncio.sleep(4)
+                            await asyncio.sleep(3)
+                        else:
+                            break
+
+                    log(f"Đã hết Cooldown! Đang bấm Search video: {search_url}")
+                    await input_box.fill("")
+                    await asyncio.sleep(0.2)
+                    await input_box.fill(search_url)
+                    await asyncio.sleep(0.5)
+                    await search_btn.click()
+                    await asyncio.sleep(5)
+
+                    # Bước 2: Nếu sau khi Search Zefoy vẫn hiện Cooldown thì chờ tiếp
+                    while True:
+                        menu_text = await page.locator('.t-chearts-menu').inner_text()
+                        if "Please wait" in menu_text:
+                            m = re.search(r'Please wait\s+(\d+\s+minute\(s\)\s+\d+\s+second\(s\))', menu_text)
+                            c_str = m.group(1) if m else "..."
+                            STATUS["cooldown"] = c_str
+                            STATUS["current_status"] = f"Đang chờ Cooldown ({c_str})"
+                            await asyncio.sleep(3)
                         else:
                             break
 
@@ -233,7 +245,7 @@ class ZefoyCommentsHeartsBot:
                     if await count_btn.count() == 0:
                         log("Bấm Search để nạp nút danh sách bình luận...")
                         await input_box.fill(search_url)
-                        await search_btn.click(force=True)
+                        await search_btn.click()
                         await asyncio.sleep(5)
                         count_btn = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button')
 
