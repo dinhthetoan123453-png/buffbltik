@@ -1,26 +1,19 @@
-#!/usr/bin/env python3
-"""
-⚡ TikTok Zefoy Comments Hearts Booster - Render Web Service Edition ⚡
-Tích hợp Web Server giám sát tiến độ + Chạy bot ngầm 24/7 với Gemini AI Captcha Solver.
-"""
-
+import asyncio
 import os
 import re
-import sys
 import time
 import base64
-import asyncio
-import threading
 import requests
+from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from playwright.async_api import async_playwright
 
 ZEFOY_URL = "https://zefoy.com/"
 DEFAULT_GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-3.5-flash-lite"
-TARGET_URL = os.getenv("TIKTOK_URL", "https://www.tiktok.com/@toandinh0207/photo/7681249165866814741")
-KEYWORD = os.getenv("COMMENT_KEYWORD", "").lower().strip() or None
-USERNAME = os.getenv("COMMENT_USERNAME", "").lower().strip() or None
+TARGET_URL = os.getenv("TIKTOK_URL", "https://vt.tiktok.com/ZS9DYddHW9abm-CnX9Q/")
+KEYWORD = os.getenv("COMMENT_KEYWORD", "ok").lower().strip() or None
+USERNAME = os.getenv("COMMENT_USERNAME", "dtt_027").lower().strip() or None
 COMMENT_INDEX = int(os.getenv("COMMENT_INDEX", "0"))
 PORT = int(os.getenv("PORT", "10000"))
 
@@ -39,9 +32,25 @@ def log(msg):
     entry = f"[{timestamp}] {msg}"
     print(entry, flush=True)
     STATUS["logs"].append(entry)
-    if len(STATUS["logs"]) > 40:
+    if len(STATUS["logs"]) > 50:
         STATUS["logs"].pop(0)
     STATUS["last_update"] = timestamp
+
+def resolve_tiktok_url(url):
+    """Tự động resolve link rút gọn vt.tiktok.com sang link video đầy đủ"""
+    if not url:
+        return url
+    if "vt.tiktok.com" in url or "vm.tiktok.com" in url:
+        try:
+            r = requests.head(url, allow_redirects=True, timeout=10, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
+            clean = r.url.split('?')[0]
+            log(f"Đã giải mã link rút gọn: {url} -> {clean}")
+            return clean
+        except Exception as e:
+            log(f"Lỗi giải mã link rút gọn: {e}")
+    return url.split('?')[0]
 
 class SimpleWebServer(BaseHTTPRequestHandler):
     def do_HEAD(self):
@@ -75,7 +84,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
     <div class="card">
         <h2>💖 Zefoy Comments Hearts Booster (24/7 Cloud)</h2>
         <p><b>Video:</b> <a href="{TARGET_URL}" target="_blank" style="color: #79c0ff;">{TARGET_URL}</a></p>
-        <p><b>Mục tiêu buff:</b> <span style="color: #e3b341;">{filter_desc}</span></p>
+        <p><b>Mục tiêu buff:</b> <span style="color: #e3b341;">{filter_desc} (User: {USERNAME}, Keyword: {KEYWORD})</span></p>
+        <p><b>Limit mỗi lượt:</b> <span style="color: #56d364; font-weight: bold;">50 Tim</span></p>
         <p><b>Trạng thái:</b> <span class="badge">{STATUS['current_status']}</span></p>
         <p><b>Thời gian Cooldown còn lại:</b> <span style="font-size: 22px; font-weight: bold; color: #f0883e;">⏳ {STATUS['cooldown']}</span></p>
         <p><b>Tổng lượt buff tim thành công:</b> <span style="font-size: 22px; font-weight: bold; color: #f778ba;">{STATUS['total_sent']}</span></p>
@@ -94,7 +104,8 @@ def start_web_server():
 
 class ZefoyCommentsHeartsBot:
     def __init__(self, target_url, api_key):
-        self.target_url = target_url
+        self.raw_target_url = target_url
+        self.target_url = resolve_tiktok_url(target_url)
         self.api_key = api_key
 
     def solve_captcha_api(self, image_bytes):
@@ -120,7 +131,7 @@ class ZefoyCommentsHeartsBot:
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(
-                headless=False,
+                headless=False, # Chạy trong Xvfb ảo
                 args=['--no-sandbox', '--disable-blink-features=AutomationControlled', '--disable-infobars']
             )
             context = await browser.new_context(
@@ -135,11 +146,16 @@ class ZefoyCommentsHeartsBot:
             await page.goto(ZEFOY_URL, wait_until="domcontentloaded", timeout=40000)
             await asyncio.sleep(3)
 
-            # Giải Captcha tự động qua Gemini AI
+            # Giải Captcha tự động
             content = await page.content()
             if 'captchalogin' in content:
                 STATUS["current_status"] = "Đang giải Captcha bằng AI..."
                 for attempt in range(1, 6):
+                    # Xóa modal quảng cáo nếu có che khuất
+                    await page.evaluate("""() => {
+                        document.querySelectorAll('.modal, .modal-backdrop').forEach(el => el.remove());
+                        document.body.classList.remove('modal-open');
+                    }""")
                     log(f"AI giải Captcha lần #{attempt}...")
                     captcha_img = page.locator('#captcha-img')
                     await captcha_img.wait_for(state="visible", timeout=15000)
@@ -153,7 +169,7 @@ class ZefoyCommentsHeartsBot:
                     input_cap = page.locator('input[name="captchalogin"]')
                     await input_cap.fill(text)
                     await asyncio.sleep(0.5)
-                    await page.locator('button.submit-captcha, button[type="submit"]').first.click()
+                    await page.locator('button.submit-captcha, button[type="submit"]').first.click(force=True)
                     await asyncio.sleep(4)
                     
                     c = await page.content()
@@ -183,75 +199,90 @@ class ZefoyCommentsHeartsBot:
                 log(f"--- Bắt đầu lượt #{round_idx} ---")
                 
                 try:
+                    # Đảm bảo link đã được resolve
+                    if "vt.tiktok.com" in self.target_url or "vm.tiktok.com" in self.target_url:
+                        self.target_url = resolve_tiktok_url(self.target_url)
+
                     input_box = page.locator('.t-chearts-menu input[type="search"], .t-chearts-menu input[type="text"]').first
+                    await input_box.fill("")
+                    await asyncio.sleep(0.2)
                     await input_box.fill(self.target_url)
                     await asyncio.sleep(0.5)
                     
                     search_btn = page.locator('.t-chearts-menu button[type="submit"]').first
                     await search_btn.click(force=True)
-                    await input_box.press("Enter")
-                    log("Đã bấm Search video, chờ danh sách bình luận...")
+                    log(f"Đã bấm Search video: {self.target_url}")
+                    await asyncio.sleep(3)
+
+                    # Bước 1: Kiểm tra xem có đang bị Cooldown không
+                    for _ in range(75):
+                        menu_text = await page.locator('.t-chearts-menu').inner_text()
+                        if "Please wait" in menu_text:
+                            m = re.search(r'Please wait\s+(\d+\s+minute\(s\)\s+\d+\s+second\(s\))', menu_text)
+                            c_str = m.group(1) if m else "..."
+                            STATUS["cooldown"] = c_str
+                            STATUS["current_status"] = f"Đang chờ Cooldown ({c_str})"
+                            await asyncio.sleep(4)
+                        else:
+                            break
+
+                    # Sau khi hết Cooldown, kiểm tra nút số lượng comment (#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button.wbutton)
+                    count_btn = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button.wbutton, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r form button')
+                    if await count_btn.count() == 0:
+                        log("Bấm Search để nạp nút danh sách bình luận...")
+                        await search_btn.click(force=True)
+                        await asyncio.sleep(5)
 
                     action_clicked = False
-                    for _ in range(16):
-                        await asyncio.sleep(1)
+                    if await count_btn.count() > 0:
+                        count_text = (await count_btn.first.inner_text()).strip()
+                        log(f"Tìm thấy nút mở bình luận ({count_text}), đang bấm mở...")
+                        await count_btn.first.click(force=True)
+                        await asyncio.sleep(5)
 
-                        # Chọn limit 50 nếu có dropdown (Comments Hearts max 50)
-                        selects = page.locator('.t-chearts-menu select')
-                        if await selects.count() > 0:
-                            sel = selects.first
-                            opts = await sel.locator('option').all_inner_texts()
-                            selected = False
-                            for target_val in ['50', '25', '10']:
-                                for o in opts:
-                                    if target_val in o:
-                                        await sel.select_option(label=o)
-                                        log(f"Đã chọn limit: {o}")
-                                        selected = True
-                                        break
-                                if selected:
-                                    break
+                        # Tìm danh sách comment
+                        comment_items = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r li.list-group-item')
+                        item_count = await comment_items.count()
+                        log(f"Đã tải {item_count} bình luận vào danh sách")
 
-                        # Tìm các nút bình luận
-                        result_btns = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button, .t-chearts-menu form ~ div button')
-                        btn_count = await result_btns.count()
-
-                        if btn_count > 0:
-                            target_btn = None
-                            for i in range(btn_count):
-                                btn = result_btns.nth(i)
-                                txt = (await btn.inner_text()).strip()
-                                if 'search' in txt.lower():
-                                    continue
-
-                                parent_text = await btn.evaluate("b => b.parentElement ? (b.parentElement.innerText || '') : ''")
-                                p_lower = parent_text.lower()
-
-                                match_kw = True if not KEYWORD else (KEYWORD in p_lower)
-                                match_user = True if not USERNAME else (USERNAME in p_lower)
-
-                                if match_kw and match_user:
-                                    if i >= COMMENT_INDEX:
-                                        target_btn = btn
-                                        log(f"Khớp bình luận: '{parent_text.strip()[:50]}...'")
-                                        break
-
-                            if not target_btn and btn_count > 0:
-                                target_btn = result_btns.first
-
-                            if target_btn:
-                                log("Bấm nút gửi Tim cho bình luận!")
-                                await target_btn.click(force=True)
-                                action_clicked = True
+                        target_item = None
+                        for i in range(item_count):
+                            item = comment_items.nth(i)
+                            t = (await item.inner_text()).lower()
+                            match_kw = True if not KEYWORD else (KEYWORD.lower() in t)
+                            match_user = True if not USERNAME else (USERNAME.lower() in t)
+                            if match_kw and match_user:
+                                target_item = item
+                                log(f"Khớp bình luận: {(await item.inner_text()).strip()[:40]}...")
                                 break
 
-                        if action_clicked:
-                            break
+                        if not target_item and item_count > 0:
+                            target_item = comment_items.first
+                            log(f"Chọn bình luận đầu tiên: {(await target_item.inner_text()).strip()[:40]}...")
+
+                        if target_item:
+                            # Chọn limit 50
+                            sel = target_item.locator('select#selectlimit, select[name="select_lmt"]')
+                            if await sel.count() > 0:
+                                try:
+                                    await sel.select_option(value="50")
+                                    log("Đã chọn mức Limit: 50 Tim")
+                                except Exception:
+                                    pass
+                                await asyncio.sleep(0.5)
+
+                            # Bấm nút gửi tim
+                            heart_btn = target_item.locator('button.wbutton, button[type="submit"]')
+                            if await heart_btn.count() > 0:
+                                log("💖 Đang bấm nút gửi 50 Tim vào bình luận...")
+                                await heart_btn.first.click(force=True)
+                                action_clicked = True
+                                await asyncio.sleep(4)
 
                     if action_clicked:
                         STATUS["total_sent"] += 1
-                        log(f"💖 Gửi Tim Bình Luận thành công! Tổng: {STATUS['total_sent']}")
-                        await asyncio.sleep(4)
+                        log(f"💖 Gửi 50 Tim Bình Luận thành công! Tổng số lượt: {STATUS['total_sent']}")
+                        await asyncio.sleep(3)
 
                     # Cooldown
                     STATUS["current_status"] = "Đang chờ Cooldown..."
@@ -293,11 +324,19 @@ class ZefoyCommentsHeartsBot:
                     log(f"Lỗi: {e}")
                     await asyncio.sleep(8)
 
-def start_bot_thread():
-    bot = ZefoyCommentsHeartsBot(TARGET_URL, DEFAULT_GEMINI_KEY)
+def main():
+    api_key = DEFAULT_GEMINI_KEY
+    if not api_key:
+        print("[!] Lỗi: Chưa cung cấp GEMINI_API_KEY trong biến môi trường!")
+        return
+
+    # Chạy Web server giám sát trên thread riêng
+    t = Thread(target=start_web_server, daemon=True)
+    t.start()
+
+    # Chạy bot buff comments hearts
+    bot = ZefoyCommentsHeartsBot(TARGET_URL, api_key)
     asyncio.run(bot.run())
 
 if __name__ == "__main__":
-    t = threading.Thread(target=start_bot_thread, daemon=True)
-    t.start()
-    start_web_server()
+    main()

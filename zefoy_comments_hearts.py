@@ -27,9 +27,26 @@ ZEFOY_URL = "https://zefoy.com/"
 DEFAULT_GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 
+def resolve_tiktok_url(url):
+    """Tự động resolve link rút gọn vt.tiktok.com sang link video đầy đủ"""
+    if not url:
+        return url
+    if "vt.tiktok.com" in url or "vm.tiktok.com" in url:
+        try:
+            r = requests.head(url, allow_redirects=True, timeout=10, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
+            clean = r.url.split('?')[0]
+            print(f"[*] Đã giải mã link rút gọn: {url} -> {clean}")
+            return clean
+        except Exception as e:
+            print(f"[!] Lỗi giải mã link: {e}")
+    return url.split('?')[0]
+
 class ZefoyCommentsHeartsBot:
     def __init__(self, target_url, api_key=None, keyword=None, username=None, comment_index=0, loops=0):
-        self.target_url = target_url
+        self.raw_target_url = target_url
+        self.target_url = resolve_tiktok_url(target_url)
         self.api_key = api_key or os.getenv("GEMINI_API_KEY", DEFAULT_GEMINI_KEY)
         self.keyword = keyword.lower() if keyword else None
         self.username = username.lower() if username else None
@@ -233,8 +250,11 @@ class ZefoyCommentsHeartsBot:
             await browser.close()
 
     async def _execute_cycle(self, page):
-        """Điền link video -> Bấm Search -> Chọn bình luận mục tiêu -> Bấm nút Tim"""
+        """Điền link video -> Bấm Search -> Bấm nút số lượng bình luận -> Chọn bình luận mục tiêu -> Bấm nút Tim"""
         try:
+            if "vt.tiktok.com" in self.target_url or "vm.tiktok.com" in self.target_url:
+                self.target_url = resolve_tiktok_url(self.target_url)
+
             input_box = page.locator(
                 '.t-chearts-menu input[type="search"], .t-chearts-menu input[placeholder*="URL"], .t-chearts-menu input[type="text"]'
             )
@@ -243,7 +263,6 @@ class ZefoyCommentsHeartsBot:
                 return "retry"
 
             target_input = input_box.first
-            await target_input.click()
             await target_input.fill("")
             await asyncio.sleep(0.3)
             await target_input.fill(self.target_url)
@@ -254,111 +273,78 @@ class ZefoyCommentsHeartsBot:
             print("[*] Đang bấm nút Search...")
             search_btn = page.locator(
                 '.t-chearts-menu button[type="submit"], .t-chearts-menu button:has-text("Search")'
-            )
-            if await search_btn.count() > 0:
-                await search_btn.first.click(force=True)
-            else:
-                await target_input.press("Enter")
+            ).first
+            await search_btn.click(force=True)
+            await asyncio.sleep(3)
 
-            try:
-                await target_input.press("Enter")
-            except Exception:
-                pass
+            # Kiểm tra nếu Zefoy đang trong Cooldown
+            panel_text = await page.locator('.t-chearts-menu').inner_text()
+            if "please wait" in panel_text.lower():
+                print("[⏳] Phát hiện thông báo Cooldown đang đếm ngược.")
+                return "cooldown"
 
-            # Chờ danh sách bình luận trả về từ server Zefoy
-            print("[*] Đang chờ server nạp danh sách bình luận...")
+            # Kiểm tra nút số lượng bình luận (ví dụ: ' 2' với icon fa-comments)
+            count_btn = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button.wbutton, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r form button')
+            if await count_btn.count() == 0:
+                print("[*] Bấm Search để nạp nút bình luận...")
+                await search_btn.click(force=True)
+                await asyncio.sleep(5)
+
             action_clicked = False
+            if await count_btn.count() > 0:
+                c_text = (await count_btn.first.inner_text()).strip()
+                print(f"[*] Tìm thấy nút mở danh sách bình luận ({c_text}), đang bấm mở...")
+                await count_btn.first.click(force=True)
+                await asyncio.sleep(5)
 
-            for wait_sec in range(16):
-                await asyncio.sleep(1)
+                comment_items = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r li.list-group-item')
+                item_count = await comment_items.count()
+                print(f"[*] Đã nạp {item_count} bình luận vào danh sách")
 
-                # Kiểm tra dropdown limit nếu có (chọn max 50 cho Comments Hearts)
-                selects = page.locator('.t-chearts-menu select')
-                if await selects.count() > 0:
-                    sel = selects.first
-                    options = await sel.locator('option').all_inner_texts()
-                    selected = False
-                    for target_val in ['50', '25', '10']:
-                        for opt in options:
-                            if target_val in opt:
-                                await sel.select_option(label=opt)
-                                print(f"[*] Đã chọn limit: {opt}")
-                                selected = True
-                                break
-                        if selected:
+                target_item = None
+                for i in range(item_count):
+                    item = comment_items.nth(i)
+                    t = (await item.inner_text()).lower()
+                    match_keyword = True if not self.keyword else (self.keyword in t)
+                    match_username = True if not self.username else (self.username in t)
+
+                    if match_keyword and match_username:
+                        if i >= self.comment_index:
+                            target_item = item
+                            print(f"[🎯] Đã khớp bình luận mục tiêu: {(await item.inner_text()).strip()[:60]}...")
                             break
 
-                # Tìm các bình luận và nút kích hoạt
-                result_container = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r, .t-chearts-menu .card-ortlax')
-                comment_btns = result_container.locator('button:not([type="submit"]):not(:has-text("Search"))')
+                if not target_item and item_count > 0:
+                    target_item = comment_items.first
+                    print(f"[*] Mặc định chọn bình luận đầu tiên: {(await target_item.inner_text()).strip()[:60]}...")
 
-                if await comment_btns.count() == 0:
-                    comment_btns = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button, .t-chearts-menu form ~ div button')
+                if target_item:
+                    # Chọn limit 50
+                    sel = target_item.locator('select#selectlimit, select[name="select_lmt"]')
+                    if await sel.count() > 0:
+                        try:
+                            await sel.select_option(value="50")
+                            print("[*] Đã chọn limit: 50")
+                        except Exception:
+                            pass
+                        await asyncio.sleep(0.5)
 
-                btn_count = await comment_btns.count()
-                if btn_count > 0:
-                    print(f"[*] Tìm thấy {btn_count} nút tương ứng với các bình luận!")
-
-                    # Trích xuất thông tin các bình luận để tìm bình luận khớp với filter
-                    target_btn = None
-                    target_desc = ""
-
-                    for i in range(btn_count):
-                        btn = comment_btns.nth(i)
-                        txt = (await btn.inner_text()).strip()
-                        if 'search' in txt.lower():
-                            continue
-
-                        # Lấy ngữ cảnh nội dung xung quanh nút (tên user hoặc text comment)
-                        parent_text = await btn.evaluate("""b => {
-                            let p = b.parentElement;
-                            return p ? (p.innerText || '') : '';
-                        }""")
-
-                        parent_lower = parent_text.lower()
-
-                        # Kiểm tra điều kiện lọc
-                        match_keyword = True if not self.keyword else (self.keyword in parent_lower)
-                        match_username = True if not self.username else (self.username in parent_lower)
-
-                        if match_keyword and match_username:
-                            if i >= self.comment_index:
-                                target_btn = btn
-                                target_desc = txt if txt else f"Bình luận #{i+1}"
-                                print(f"[🎯] Đã khớp bình luận mục tiêu: {parent_text.strip()[:60]}...")
-                                break
-
-                    if not target_btn and btn_count > 0:
-                        # Mặc định lấy nút bình luận đầu tiên
-                        target_btn = comment_btns.first
-                        target_desc = await target_btn.inner_text()
-
-                    if target_btn:
-                        print(f"[🔥] Đang bấm nút gửi Tim cho bình luận: '{target_desc.strip()}'...")
-                        await target_btn.click(force=True)
+                    # Bấm nút gửi tim
+                    heart_btn = target_item.locator('button.wbutton, button[type="submit"]')
+                    if await heart_btn.count() > 0:
+                        print("[🔥] Đang bấm nút gửi 50 Tim cho bình luận...")
+                        await heart_btn.first.click(force=True)
                         action_clicked = True
-                        break
-
-                if action_clicked:
-                    break
-
-                # Kiểm tra xem có đang bị Cooldown sẵn không
-                panel_text = await page.locator('.t-chearts-menu').inner_text()
-                if re.search(r'please wait\s*\d+\s*(?:minute|second|s|m)', panel_text, re.I) or re.search(r'\d{1,2}\s*:\s*\d{2}', panel_text):
-                    print("[⏳] Phát hiện thông báo Cooldown đang đếm ngược.")
-                    return "cooldown"
+                        await asyncio.sleep(4)
 
             if action_clicked:
-                await asyncio.sleep(4)
                 return "sent"
 
             final_text = await page.locator('.t-chearts-menu').inner_text()
-            if re.search(r'\d{1,2}\s*:\s*\d{2}', final_text) or 'please wait' in final_text.lower():
+            if 'please wait' in final_text.lower():
                 return "cooldown"
 
-            print("[?] Chưa thấy danh sách bình luận (có thể video không có bình luận hoặc server lag).")
             return "retry"
-
         except Exception as e:
             print(f"[!] Lỗi chu trình Comments Hearts: {e}")
             return "retry"
