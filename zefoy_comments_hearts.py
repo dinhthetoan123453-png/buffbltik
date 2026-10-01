@@ -295,23 +295,16 @@ class ZefoyCommentsHeartsBot:
             if await count_btn.count() > 0:
                 c_text = (await count_btn.first.inner_text()).strip()
                 print(f"[*] Tìm thấy nút mở danh sách bình luận ({c_text}), đang bấm mở...")
-                await count_btn.first.click(force=True)
-                await page.evaluate("""() => {
-                    const btn = document.querySelector('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button');
-                    if (btn) {
-                        btn.click();
-                        const f = btn.closest('form');
-                        if (f && f.requestSubmit) f.requestSubmit(btn);
-                    }
-                }""")
+                await count_btn.first.click()
+                await asyncio.sleep(2)
                 
                 # Chờ danh sách comment tải xong (select hoặc heart button xuất hiện)
-                for _ in range(15):
-                    await asyncio.sleep(1)
+                for _ in range(10):
                     has_sel = await page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r select').count() > 0
-                    has_heart = await page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button:has(i), #c2VuZC9mb2xsb3dlcnNfdGlrdG9r button.btn-primary').count() > 0
+                    has_heart = await page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button.btn-primary, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r button:has(i.fa-heart)').count() > 0
                     if has_sel or has_heart:
                         break
+                    await asyncio.sleep(1)
 
                 items = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r form, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r .card, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r div:has(select)')
                 item_count = await items.count()

@@ -242,34 +242,29 @@ class ZefoyCommentsHeartsBot:
                         count_text = (await count_btn.first.inner_text()).strip()
                         log(f"Tìm thấy nút mở bình luận ({count_text}), đang bấm mở...")
                         
-                        # Kích hoạt mở bình luận
-                        await count_btn.first.click(force=True)
-                        await page.evaluate("""() => {
-                            const btn = document.querySelector('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button');
-                            if (btn) {
-                                btn.click();
-                                const f = btn.closest('form');
-                                if (f && f.requestSubmit) f.requestSubmit(btn);
-                            }
-                        }""")
+                        # Kích hoạt mở bình luận bằng 1 click duy nhất (không double click / requestSubmit)
+                        await count_btn.first.click()
+                        await asyncio.sleep(2)
                         
                         # Chờ danh sách comment tải xong (select hoặc heart button xuất hiện)
                         loaded = False
-                        for wait_sec in range(15):
-                            await asyncio.sleep(1)
+                        for wait_sec in range(10):
                             has_sel = await page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r select').count() > 0
-                            has_heart = await page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button:has(i), #c2VuZC9mb2xsb3dlcnNfdGlrdG9r button.btn-primary').count() > 0
+                            has_heart = await page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button.btn-primary, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r button:has(i.fa-heart)').count() > 0
                             if has_sel or has_heart:
                                 loaded = True
                                 break
+                            await asyncio.sleep(1)
                         
                         if not loaded:
-                            log("Cảnh báo: Chưa thấy giao diện bình luận sau 15s. Đang kiểm tra nội dung...")
+                            log("Cảnh báo: Chưa thấy giao diện bình luận. Đang kiểm tra nội dung container...")
                             c_text = await page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r').inner_text()
                             log(f"Nội dung container: {c_text[:100]}")
-                        
+                        else:
+                            log("Đã nạp thành công giao diện bình luận!")
+
                         # Tìm khối bình luận
-                        items = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r form, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r .card, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r div:has(select)')
+                        items = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r form, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r .card, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r li.list-group-item')
                         item_count = await items.count()
                         log(f"Đã phát hiện {item_count} khối bình luận/form trong danh sách")
                         
@@ -290,7 +285,7 @@ class ZefoyCommentsHeartsBot:
                             else:
                                 target_container = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r')
 
-                        # Kiểm tra xem có cần chuyển trang bình luận không
+                        # Kiểm tra phân trang nếu có
                         target_text = (await target_container.inner_text()).lower()
                         match_kw = True if not KEYWORD else (KEYWORD.lower() in target_text)
                         match_user = True if not USERNAME else (USERNAME.lower() in target_text)
@@ -298,8 +293,8 @@ class ZefoyCommentsHeartsBot:
                             next_btn = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r a:has-text(">"), #c2VuZC9mb2xsb3dlcnNfdGlrdG9r button:has-text(">"), #c2VuZC9mb2xsb3dlcnNfdGlrdG9r .pagination a')
                             if await next_btn.count() > 0:
                                 log("Bình luận hiện tại chưa khớp, đang chuyển trang...")
-                                await next_btn.last.click(force=True)
-                                await asyncio.sleep(3)
+                                await next_btn.last.click()
+                                await asyncio.sleep(2)
 
                         # Chọn Limit 50 Tim
                         sel = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r select').first
@@ -315,11 +310,11 @@ class ZefoyCommentsHeartsBot:
                                     log(f"Lưu ý khi chọn limit 50: {e}")
                             await asyncio.sleep(0.5)
 
-                        # Bấm nút gửi tim (Nút xanh có icon tim)
-                        heart_btn = target_container.locator('button:has(i), button.btn-primary, button[type="submit"], button').first
+                        # Bấm nút gửi tim (Nút xanh có icon tim: button.btn-primary hoặc button:has(i.fa-heart))
+                        heart_btn = target_container.locator('button.btn-primary, button:has(i.fa-heart), button[type="submit"]').first
                         if await heart_btn.count() > 0:
                             log("💖 Đang bấm nút gửi 50 Tim vào bình luận...")
-                            await heart_btn.click(force=True)
+                            await heart_btn.click()
                             action_clicked = True
                             await asyncio.sleep(4)
 
