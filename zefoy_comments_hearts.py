@@ -284,63 +284,90 @@ class ZefoyCommentsHeartsBot:
                 return "cooldown"
 
             # Kiểm tra nút số lượng bình luận (ví dụ: ' 2' với icon fa-comments)
-            count_btn = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button.wbutton, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r form button')
+            count_btn = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button')
             if await count_btn.count() == 0:
                 print("[*] Bấm Search để nạp nút bình luận...")
                 await search_btn.click(force=True)
                 await asyncio.sleep(5)
+                count_btn = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button')
 
             action_clicked = False
             if await count_btn.count() > 0:
                 c_text = (await count_btn.first.inner_text()).strip()
                 print(f"[*] Tìm thấy nút mở danh sách bình luận ({c_text}), đang bấm mở...")
                 await count_btn.first.click(force=True)
+                await page.evaluate("""() => {
+                    const btn = document.querySelector('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button');
+                    if (btn) {
+                        btn.click();
+                        const f = btn.closest('form');
+                        if (f && f.requestSubmit) f.requestSubmit(btn);
+                    }
+                }""")
                 
-                # Chờ danh sách comment tải xong (tối đa 10s)
-                comment_items = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r li.list-group-item')
-                item_count = 0
-                for _ in range(10):
+                # Chờ danh sách comment tải xong (select hoặc heart button xuất hiện)
+                for _ in range(15):
                     await asyncio.sleep(1)
-                    item_count = await comment_items.count()
-                    if item_count > 0:
+                    has_sel = await page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r select').count() > 0
+                    has_heart = await page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button:has(i), #c2VuZC9mb2xsb3dlcnNfdGlrdG9r button.btn-primary').count() > 0
+                    if has_sel or has_heart:
                         break
-                print(f"[*] Đã nạp {item_count} bình luận vào danh sách")
 
-                target_item = None
-                for i in range(item_count):
-                    item = comment_items.nth(i)
-                    t = (await item.inner_text()).lower()
-                    match_keyword = True if not self.keyword else (self.keyword in t)
-                    match_username = True if not self.username else (self.username in t)
+                items = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r form, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r .card, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r div:has(select)')
+                item_count = await items.count()
+                print(f"[*] Đã phát hiện {item_count} khối bình luận/form trong danh sách")
 
-                    if match_keyword and match_username:
-                        if i >= self.comment_index:
-                            target_item = item
-                            print(f"[🎯] Đã khớp bình luận mục tiêu: {(await item.inner_text()).strip()[:60]}...")
-                            break
+                target_container = None
+                if item_count > 1:
+                    for i in range(item_count):
+                        it = items.nth(i)
+                        t = (await it.inner_text()).lower()
+                        match_keyword = True if not self.keyword else (self.keyword in t)
+                        match_username = True if not self.username else (self.username in t)
+                        if match_keyword and match_username:
+                            if i >= self.comment_index:
+                                target_container = it
+                                print(f"[🎯] Đã khớp bình luận mục tiêu: {(await it.inner_text()).strip()[:60]}...")
+                                break
 
-                if not target_item and item_count > 0:
-                    target_item = comment_items.first
-                    print(f"[*] Mặc định chọn bình luận đầu tiên: {(await target_item.inner_text()).strip()[:60]}...")
+                if not target_container:
+                    if item_count > 0:
+                        target_container = items.first
+                    else:
+                        target_container = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r')
 
-                if target_item:
-                    # Chọn limit 50
-                    sel = target_item.locator('select#selectlimit, select[name="select_lmt"]')
-                    if await sel.count() > 0:
+                # Kiểm tra phân trang nếu chưa khớp
+                target_text = (await target_container.inner_text()).lower()
+                match_keyword = True if not self.keyword else (self.keyword in target_text)
+                match_username = True if not self.username else (self.username in target_text)
+                if not (match_keyword and match_username):
+                    next_btn = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r a:has-text(">"), #c2VuZC9mb2xsb3dlcnNfdGlrdG9r button:has-text(">"), #c2VuZC9mb2xsb3dlcnNfdGlrdG9r .pagination a')
+                    if await next_btn.count() > 0:
+                        print("[*] Bình luận hiện tại chưa khớp, đang chuyển trang tiếp...")
+                        await next_btn.last.click(force=True)
+                        await asyncio.sleep(3)
+
+                # Chọn limit 50
+                sel = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r select').first
+                if await sel.count() > 0:
+                    try:
+                        await sel.select_option("50")
+                        print("[*] Đã chọn limit: 50")
+                    except Exception:
                         try:
-                            await sel.select_option(value="50")
-                            print("[*] Đã chọn limit: 50")
+                            await sel.select_option(label="50")
+                            print("[*] Đã chọn limit (label): 50")
                         except Exception:
                             pass
-                        await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.5)
 
-                    # Bấm nút gửi tim
-                    heart_btn = target_item.locator('button.wbutton, button[type="submit"]')
-                    if await heart_btn.count() > 0:
-                        print("[🔥] Đang bấm nút gửi 50 Tim cho bình luận...")
-                        await heart_btn.first.click(force=True)
-                        action_clicked = True
-                        await asyncio.sleep(4)
+                # Bấm nút gửi tim
+                heart_btn = target_container.locator('button:has(i), button.btn-primary, button[type="submit"], button').first
+                if await heart_btn.count() > 0:
+                    print("[🔥] Đang bấm nút gửi 50 Tim cho bình luận...")
+                    await heart_btn.click(force=True)
+                    action_clicked = True
+                    await asyncio.sleep(4)
 
             if action_clicked:
                 return "sent"

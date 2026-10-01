@@ -110,19 +110,22 @@ class ZefoyCommentsHeartsBot:
 
     def solve_captcha_api(self, image_bytes):
         b64_img = base64.b64encode(image_bytes).decode('utf-8')
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={self.api_key}"
         prompt = "This is a text captcha image. Read the word or letters shown in this image. Output ONLY the letters in lowercase, with no spaces."
         payload = {
             "contents": [{"parts": [{"text": prompt}, {"inlineData": {"mimeType": "image/png", "data": b64_img}}]}],
             "generationConfig": {"temperature": 0.0, "maxOutputTokens": 20}
         }
-        try:
-            res = requests.post(url, json=payload, timeout=12)
-            if res.status_code == 200:
-                raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
-                return re.sub(r'[^a-zA-Z]', '', raw_text).lower().strip()
-        except Exception as e:
-            log(f"Lỗi gọi Gemini API: {e}")
+        for model in [GEMINI_MODEL, "gemini-3.8-flash", "gemini-2.5-flash"]:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
+            try:
+                res = requests.post(url, json=payload, timeout=12)
+                if res.status_code == 200:
+                    raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
+                    clean = re.sub(r'[^a-zA-Z]', '', raw_text).lower().strip()
+                    if clean:
+                        return clean
+            except Exception as e:
+                log(f"Lỗi gọi Gemini API ({model}): {e}")
         return None
 
     async def run(self):
@@ -199,19 +202,18 @@ class ZefoyCommentsHeartsBot:
                 log(f"--- Bắt đầu lượt #{round_idx} ---")
                 
                 try:
-                    # Đảm bảo link đã được resolve
-                    if "vt.tiktok.com" in self.target_url or "vm.tiktok.com" in self.target_url:
-                        self.target_url = resolve_tiktok_url(self.target_url)
+                    # Dùng link trực tiếp (loại bỏ dấu chấm ở đuôi nếu có)
+                    search_url = self.raw_target_url.rstrip('.').strip()
 
                     input_box = page.locator('.t-chearts-menu input[type="search"], .t-chearts-menu input[type="text"]').first
                     await input_box.fill("")
                     await asyncio.sleep(0.2)
-                    await input_box.fill(self.target_url)
+                    await input_box.fill(search_url)
                     await asyncio.sleep(0.5)
                     
                     search_btn = page.locator('.t-chearts-menu button[type="submit"]').first
                     await search_btn.click(force=True)
-                    log(f"Đã bấm Search video: {self.target_url}")
+                    log(f"Đã bấm Search video: {search_url}")
                     await asyncio.sleep(3)
 
                     # Bước 1: Kiểm tra xem có đang bị Cooldown không
@@ -226,62 +228,100 @@ class ZefoyCommentsHeartsBot:
                         else:
                             break
 
-                    # Sau khi hết Cooldown, kiểm tra nút số lượng comment (#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button.wbutton)
-                    count_btn = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button.wbutton, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r form button')
+                    # Sau khi hết Cooldown, kiểm tra nút số lượng comment (#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button)
+                    count_btn = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button')
                     if await count_btn.count() == 0:
                         log("Bấm Search để nạp nút danh sách bình luận...")
+                        await input_box.fill(search_url)
                         await search_btn.click(force=True)
                         await asyncio.sleep(5)
+                        count_btn = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button')
 
                     action_clicked = False
                     if await count_btn.count() > 0:
                         count_text = (await count_btn.first.inner_text()).strip()
                         log(f"Tìm thấy nút mở bình luận ({count_text}), đang bấm mở...")
-                        await count_btn.first.click(force=True)
                         
-                        # Chờ danh sách comment tải xong (tối đa 10s)
-                        comment_items = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r li.list-group-item')
-                        item_count = 0
-                        for _ in range(10):
+                        # Kích hoạt mở bình luận
+                        await count_btn.first.click(force=True)
+                        await page.evaluate("""() => {
+                            const btn = document.querySelector('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button');
+                            if (btn) {
+                                btn.click();
+                                const f = btn.closest('form');
+                                if (f && f.requestSubmit) f.requestSubmit(btn);
+                            }
+                        }""")
+                        
+                        # Chờ danh sách comment tải xong (select hoặc heart button xuất hiện)
+                        loaded = False
+                        for wait_sec in range(15):
                             await asyncio.sleep(1)
-                            item_count = await comment_items.count()
+                            has_sel = await page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r select').count() > 0
+                            has_heart = await page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button:has(i), #c2VuZC9mb2xsb3dlcnNfdGlrdG9r button.btn-primary').count() > 0
+                            if has_sel or has_heart:
+                                loaded = True
+                                break
+                        
+                        if not loaded:
+                            log("Cảnh báo: Chưa thấy giao diện bình luận sau 15s. Đang kiểm tra nội dung...")
+                            c_text = await page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r').inner_text()
+                            log(f"Nội dung container: {c_text[:100]}")
+                        
+                        # Tìm khối bình luận
+                        items = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r form, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r .card, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r div:has(select)')
+                        item_count = await items.count()
+                        log(f"Đã phát hiện {item_count} khối bình luận/form trong danh sách")
+                        
+                        target_container = None
+                        if item_count > 1:
+                            for i in range(item_count):
+                                it = items.nth(i)
+                                t = (await it.inner_text()).lower()
+                                match_kw = True if not KEYWORD else (KEYWORD.lower() in t)
+                                match_user = True if not USERNAME else (USERNAME.lower() in t)
+                                if match_kw and match_user:
+                                    target_container = it
+                                    log(f"Khớp bình luận: {(await it.inner_text()).strip()[:40]}...")
+                                    break
+                        if not target_container:
                             if item_count > 0:
-                                break
-                        log(f"Đã tải {item_count} bình luận vào danh sách")
+                                target_container = items.first
+                            else:
+                                target_container = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r')
 
-                        target_item = None
-                        for i in range(item_count):
-                            item = comment_items.nth(i)
-                            t = (await item.inner_text()).lower()
-                            match_kw = True if not KEYWORD else (KEYWORD.lower() in t)
-                            match_user = True if not USERNAME else (USERNAME.lower() in t)
-                            if match_kw and match_user:
-                                target_item = item
-                                log(f"Khớp bình luận: {(await item.inner_text()).strip()[:40]}...")
-                                break
+                        # Kiểm tra xem có cần chuyển trang bình luận không
+                        target_text = (await target_container.inner_text()).lower()
+                        match_kw = True if not KEYWORD else (KEYWORD.lower() in target_text)
+                        match_user = True if not USERNAME else (USERNAME.lower() in target_text)
+                        if not (match_kw and match_user):
+                            next_btn = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r a:has-text(">"), #c2VuZC9mb2xsb3dlcnNfdGlrdG9r button:has-text(">"), #c2VuZC9mb2xsb3dlcnNfdGlrdG9r .pagination a')
+                            if await next_btn.count() > 0:
+                                log("Bình luận hiện tại chưa khớp, đang chuyển trang...")
+                                await next_btn.last.click(force=True)
+                                await asyncio.sleep(3)
 
-                        if not target_item and item_count > 0:
-                            target_item = comment_items.first
-                            log(f"Chọn bình luận đầu tiên: {(await target_item.inner_text()).strip()[:40]}...")
-
-                        if target_item:
-                            # Chọn limit 50
-                            sel = target_item.locator('select#selectlimit, select[name="select_lmt"]')
-                            if await sel.count() > 0:
+                        # Chọn Limit 50 Tim
+                        sel = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r select').first
+                        if await sel.count() > 0:
+                            try:
+                                await sel.select_option("50")
+                                log("Đã chọn mức Limit: 50 Tim")
+                            except Exception:
                                 try:
-                                    await sel.select_option(value="50")
-                                    log("Đã chọn mức Limit: 50 Tim")
-                                except Exception:
-                                    pass
-                                await asyncio.sleep(0.5)
+                                    await sel.select_option(label="50")
+                                    log("Đã chọn mức Limit (label): 50 Tim")
+                                except Exception as e:
+                                    log(f"Lưu ý khi chọn limit 50: {e}")
+                            await asyncio.sleep(0.5)
 
-                            # Bấm nút gửi tim
-                            heart_btn = target_item.locator('button.wbutton, button[type="submit"]')
-                            if await heart_btn.count() > 0:
-                                log("💖 Đang bấm nút gửi 50 Tim vào bình luận...")
-                                await heart_btn.first.click(force=True)
-                                action_clicked = True
-                                await asyncio.sleep(4)
+                        # Bấm nút gửi tim (Nút xanh có icon tim)
+                        heart_btn = target_container.locator('button:has(i), button.btn-primary, button[type="submit"], button').first
+                        if await heart_btn.count() > 0:
+                            log("💖 Đang bấm nút gửi 50 Tim vào bình luận...")
+                            await heart_btn.click(force=True)
+                            action_clicked = True
+                            await asyncio.sleep(4)
 
                     if action_clicked:
                         STATUS["total_sent"] += 1
