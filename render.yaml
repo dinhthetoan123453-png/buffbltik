@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: tiktok-zefoy-comments-hearts
+    env: docker
+    dockerfilePath: Dockerfile
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TIKTOK_URL
+        value: "https://www.tiktok.com/@toandinh0207/photo/7681249165866814741"
+      - key: COMMENT_KEYWORD
+        value: ""
+      - key: COMMENT_USERNAME
+        value: ""
+      - key: PORT
+        value: "10000"
