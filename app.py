@@ -115,15 +115,19 @@ class ZefoyCommentsHeartsBot:
             "contents": [{"parts": [{"text": prompt}, {"inlineData": {"mimeType": "image/png", "data": b64_img}}]}],
             "generationConfig": {"temperature": 0.0, "maxOutputTokens": 20}
         }
-        for model in [GEMINI_MODEL, "gemini-3.8-flash", "gemini-2.5-flash"]:
+        for model in [GEMINI_MODEL, "gemini-2.5-flash", "gemini-3.8-flash"]:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
             try:
                 res = requests.post(url, json=payload, timeout=12)
                 if res.status_code == 200:
-                    raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
-                    clean = re.sub(r'[^a-zA-Z]', '', raw_text).lower().strip()
-                    if clean:
-                        return clean
+                    data = res.json()
+                    candidates = data.get('candidates', [])
+                    if candidates:
+                        parts = candidates[0].get('content', {}).get('parts', [])
+                        if parts and 'text' in parts[0]:
+                            clean = re.sub(r'[^a-zA-Z]', '', parts[0]['text']).lower().strip()
+                            if clean:
+                                return clean
             except Exception as e:
                 log(f"Lỗi gọi Gemini API ({model}): {e}")
         return None
@@ -208,73 +212,85 @@ class ZefoyCommentsHeartsBot:
                     input_box = page.locator('.t-chearts-menu input[type="search"], .t-chearts-menu input[type="text"]').first
                     search_btn = page.locator('.t-chearts-menu button[type="submit"]').first
 
-                    # Bước 1: Kiểm tra và chờ hết Cooldown trước khi Search
-                    while True:
-                        menu_text = await page.locator('.t-chearts-menu').inner_text()
-                        if "Please wait" in menu_text:
-                            m = re.search(r'Please wait\s+(\d+\s+minute\(s\)\s+\d+\s+second\(s\))', menu_text)
-                            c_str = m.group(1) if m else "..."
-                            STATUS["cooldown"] = c_str
-                            STATUS["current_status"] = f"Đang chờ Cooldown ({c_str})"
-                            await asyncio.sleep(3)
-                        else:
-                            break
+                    # Hàm phụ trợ: Chờ Cooldown hết hẳn (hỗ trợ phút, giây, và trạng thái READY)
+                    async def wait_cooldown(locator_str, step_name):
+                        last_c = ""
+                        while True:
+                            txt = await page.locator(locator_str).inner_text()
+                            if "please wait" in txt.lower():
+                                m = re.search(r'Please wait\s+(\d+)\s+minute\(s\)\s+(\d+)\s+seconds?', txt, re.I)
+                                if m:
+                                    c_str = f"{m.group(1)}m {m.group(2)}s"
+                                else:
+                                    m2 = re.search(r'Please wait\s+(\d+\s+minute\(s\)\s+\d+\s+second\(s\))', txt, re.I)
+                                    if m2:
+                                        c_str = m2.group(1)
+                                    else:
+                                        m3 = re.search(r'(\d+)\s*s(?:econds?)?', txt, re.I)
+                                        c_str = f"{m3.group(1)}s" if m3 else "đếm ngược..."
+                                STATUS["cooldown"] = c_str
+                                STATUS["current_status"] = f"Đang chờ Cooldown ({c_str})"
+                                if c_str != last_c:
+                                    log(f"⏳ [{step_name}] Cooldown còn: {c_str}")
+                                    last_c = c_str
+                                await asyncio.sleep(2)
+                            else:
+                                break
 
-                    log(f"Đã hết Cooldown! Đang bấm Search video: {search_url}")
-                    await input_box.fill("")
-                    await asyncio.sleep(0.2)
-                    await input_box.fill(search_url)
-                    await asyncio.sleep(0.5)
-                    await search_btn.click()
-                    await asyncio.sleep(5)
+                    # 1. Chờ Cooldown trước khi bắt đầu nạp
+                    await wait_cooldown('.t-chearts-menu', "Khởi đầu")
 
-                    # Bước 2: Nếu sau khi Search Zefoy vẫn hiện Cooldown thì chờ tiếp
-                    while True:
-                        menu_text = await page.locator('.t-chearts-menu').inner_text()
-                        if "Please wait" in menu_text:
-                            m = re.search(r'Please wait\s+(\d+\s+minute\(s\)\s+\d+\s+second\(s\))', menu_text)
-                            c_str = m.group(1) if m else "..."
-                            STATUS["cooldown"] = c_str
-                            STATUS["current_status"] = f"Đang chờ Cooldown ({c_str})"
-                            await asyncio.sleep(3)
-                        else:
-                            break
-
-                    # Sau khi hết Cooldown, kiểm tra nút số lượng comment (#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button)
-                    count_btn = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button')
-                    if await count_btn.count() == 0:
-                        log("Bấm Search để nạp nút danh sách bình luận...")
+                    # 2. Vòng lặp kiên trì tìm và nạp danh sách bình luận
+                    loaded = False
+                    for load_attempt in range(1, 6):
+                        log(f"Đang bấm Search video (lần {load_attempt}): {search_url}")
+                        await input_box.fill("")
+                        await asyncio.sleep(0.2)
                         await input_box.fill(search_url)
+                        await asyncio.sleep(0.5)
                         await search_btn.click()
-                        await asyncio.sleep(5)
-                        count_btn = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button')
+                        await asyncio.sleep(4)
 
-                    action_clicked = False
-                    if await count_btn.count() > 0:
+                        # Chờ nếu search xong Zefoy bắt chờ Cooldown
+                        await wait_cooldown('.t-chearts-menu', f"Sau search {load_attempt}")
+
+                        # Kiểm tra nút số lượng comment (#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button)
+                        count_btn = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button')
+                        if await count_btn.count() == 0:
+                            log(f"Chưa thấy nút mở bình luận ở lần {load_attempt}, đang tìm lại...")
+                            await asyncio.sleep(2)
+                            continue
+
                         count_text = (await count_btn.first.inner_text()).strip()
                         log(f"Tìm thấy nút mở bình luận ({count_text}), đang bấm mở...")
-                        
-                        # Kích hoạt mở bình luận bằng 1 click duy nhất (không double click / requestSubmit)
                         await count_btn.first.click()
                         await asyncio.sleep(2)
-                        
-                        # Chờ danh sách comment tải xong (select hoặc heart button xuất hiện)
-                        loaded = False
-                        for wait_sec in range(10):
+
+                        # Kiểm tra xem sau khi click nút mở, container có hiện Cooldown đếm ngược không
+                        c_text = await page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r').inner_text()
+                        if "please wait" in c_text.lower():
+                            log("Zefoy yêu cầu chờ Cooldown trong container...")
+                            await wait_cooldown('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r', "Container")
+                            log("Container đã hết Cooldown! Đang nạp lại danh sách bình luận...")
+                            continue
+
+                        # Kiểm tra giao diện bình luận đã nạp thành công chưa
+                        for w in range(10):
                             has_sel = await page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r select').count() > 0
                             has_heart = await page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r button.btn-primary, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r button:has(i.fa-heart)').count() > 0
                             if has_sel or has_heart:
                                 loaded = True
                                 break
                             await asyncio.sleep(1)
-                        
-                        if not loaded:
-                            log("Cảnh báo: Chưa thấy giao diện bình luận. Đang kiểm tra nội dung container...")
-                            c_text = await page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r').inner_text()
-                            log(f"Nội dung container: {c_text[:100]}")
-                        else:
-                            log("Đã nạp thành công giao diện bình luận!")
 
+                        if loaded:
+                            log("Đã nạp thành công giao diện bình luận!")
+                            break
+                        else:
+                            log(f"Chưa nạp được danh sách bình luận ở lần {load_attempt}, thử lại...")
+
+                    action_clicked = False
+                    if loaded:
                         # Tìm khối bình luận
                         items = page.locator('#c2VuZC9mb2xsb3dlcnNfdGlrdG9r form, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r .card, #c2VuZC9mb2xsb3dlcnNfdGlrdG9r li.list-group-item')
                         item_count = await items.count()
@@ -329,18 +345,20 @@ class ZefoyCommentsHeartsBot:
                             await heart_btn.click()
                             action_clicked = True
                             await asyncio.sleep(4)
+                    else:
+                        log("⚠️ Cảnh báo: Không thể tải giao diện bình luận sau 5 lần thử. Sẽ thử lại ở lượt tiếp theo.")
 
                     if action_clicked:
                         STATUS["total_sent"] += 1
                         log(f"💖 Gửi 50 Tim Bình Luận thành công! Tổng số lượt: {STATUS['total_sent']}")
                         await asyncio.sleep(3)
 
-                    # Cooldown
+                    # Cooldown sau khi gửi
                     STATUS["current_status"] = "Đang chờ Cooldown..."
                     log("Đang theo dõi Cooldown...")
                     empty_count = 0
                     last_logged_time = ""
-                    for c_step in range(90):
+                    for c_step in range(120):
                         await asyncio.sleep(3)
                         text = await page.evaluate("() => document.querySelector('.t-chearts-menu')?.innerText || document.body.innerText || ''")
                         
@@ -356,7 +374,7 @@ class ZefoyCommentsHeartsBot:
                         elif match_sec_only and any(w in text.lower() for w in ['wait', 'seconds', 'next submit']):
                             time_str = f"{match_sec_only.group(1)}s"
 
-                        if time_str:
+                        if time_str and "please wait" in text.lower():
                             STATUS["cooldown"] = time_str
                             STATUS["current_status"] = f"Đang chờ Cooldown ({time_str})"
                             empty_count = 0
@@ -365,7 +383,7 @@ class ZefoyCommentsHeartsBot:
                                 last_logged_time = time_str
                         else:
                             empty_count += 1
-                            if empty_count >= 2:
+                            if empty_count >= 3:
                                 STATUS["cooldown"] = "0s (Sẵn sàng)"
                                 STATUS["current_status"] = "Sẵn sàng cho lượt tiếp theo"
                                 log("✅ Hết thời gian Cooldown! Bắt đầu lượt buff mới.")
